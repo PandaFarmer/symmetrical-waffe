@@ -3,7 +3,7 @@ import pandas as pd
 import time
 
 start_read = time.time()
-df = pd.read_csv("../KaggleLANL/train.csv")
+df = pd.read_csv("input/train.csv", low_memor=False)
 
 #df_ss = pd.read_csv("KaggleLANL/sample_submission.csv")
 
@@ -19,7 +19,7 @@ rows = df.shape[0]
 while i*batchsize < rows:
 	start_batch_write = time.time()
 	print("writing to file rows batchnum: %d"%(i))
-	df.ix[i*batchsize : i*batchsize + batchsize].to_csv(path_or_buf="../KaggleLANL/TrainSplits/train_batch_num%s.csv"%i)
+	df.ix[i*batchsize : i*batchsize + batchsize].to_csv(path_or_buf="input/train/train_batch_num%s.csv"%i)
 	end_batch_write = time.time()
 	print("Batch write completed for batch_num: %d in %ds"%(i, end_batchwrite-start_batch_write))
 	i += 1
