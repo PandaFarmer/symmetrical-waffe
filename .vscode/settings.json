@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "tensor": "cpp"
+    },
+    "C_Cpp.dimInactiveRegions": false
+}
