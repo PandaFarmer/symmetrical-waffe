@@ -6,12 +6,6 @@ import time
 import sys
 import os
 
-chunksize = 150000
-float_data = pd.read_csv("input/train.csv", chunksize=chunksize,
-                         dtype={"acoustic_data": np.float32, "time_to_failure": np.float32})
-
-#float_data = float_data.values
-
 def extract_features(z):
      return np.c_[z.mean(axis=1),
                   np.median(np.abs(z), axis=1),
@@ -53,24 +47,51 @@ def create_X(x, last_index=None, n_steps=150, step_length=1000):
 
 n_features = 16
 
-BATCH_LIMIT = 5 #up to 4196/2
+BATCH_LIMIT = 40 #up to 4196/2, factor of 2 in batch_generator
+TRAIN_FILEPATH = "input/train/train_batch_num"
 #also try train_batch_num implementation
 #since certain ranges not considered, limited by chunksize chunking?
 
-def generator(file_name, batch_size=16, n_steps=150, step_length = 1000):
+def batch_generator(file_name, batch_size=16, n_steps=150, step_length = 1000):
+    epoch = 0
+    chunksize = n_steps*step_length
+    while True:
+        for i in range(BATCH_LIMIT*2):
+            float_data1 = pd.read_csv(f"{TRAIN_FILEPATH}{i}.csv",
+                dtype={"acoustic_data": np.float32, "time_to_failure": np.float32})
+            float_data2 = pd.read_csv(f"{TRAIN_FILEPATH}{i+1}.csv",
+                dtype={"acoustic_data": np.float32, "time_to_failure": np.float32})
+            data = np.vstack((float_data1.values, float_data2.values))
+            rows = np.random.randint(chunksize, size=batch_size)
+            samples = np.zeros((batch_size, n_steps, n_features))
+            targets = np.zeros(batch_size, )
+            sample_ranges = None
+            for j, row in enumerate(rows):
+                samples[j] = create_X(data[:, 0], last_index=None, n_steps=n_steps, step_length=step_length)
+                targets[j] = data[row, 1]
+                sample_range = np.arange(i*chunksize+row-chunksize, i*chunksize+row)
+                if sample_ranges is None:
+                    sample_ranges = sample_range
+                else:
+                    sample_ranges = np.vstack((sample_ranges, sample_range))
+            yield samples, targets, sample_ranges, epoch
+        epoch += 1
+
+def generator(file_path, batch_size=16, n_steps=150, step_length = 1000):
     epoch = 0
     while True:
         chunksize = 2*n_steps*step_length
-        float_data = pd.read_csv("input/train.csv", chunksize=chunksize,
+        float_data = pd.read_csv(f"input/{file_path}", chunksize=chunksize,
             dtype={"acoustic_data": np.float32, "time_to_failure": np.float32})
         for i, data in enumerate(float_data):
             if i == BATCH_LIMIT:
+                epoch += 1
                 break
             #if i == len(float_data):
-            if data.shape[0] != chunksize:
+            #if data.shape[0] != chunksize:
                 #idk end edge case
-                epoch += 1
-                continue
+            #    epoch += 1
+            #    continue
             data = data.values
             rows = np.random.randint(n_steps*step_length, chunksize, size=batch_size)#makes cv here?
             samples = np.zeros((batch_size, n_steps, n_features))
@@ -87,7 +108,7 @@ def generator(file_name, batch_size=16, n_steps=150, step_length = 1000):
                 if sample_ranges is None:
                     sample_ranges = sample_range
                 else:
-                    sample_ranges = np.vstack(sample_ranges, sample_range)
+                    sample_ranges = np.vstack((sample_ranges, sample_range))
 
             np.expand_dims(targets, 1)
             
@@ -98,8 +119,11 @@ def generator(file_name, batch_size=16, n_steps=150, step_length = 1000):
 
 batch_size = 32
 
-train_gen = generator(float_data, batch_size=batch_size)
-valid_gen = generator(float_data, batch_size=batch_size)
+float_data_file_path = "train.csv"
+#train_gen = generator(float_data_file_path, batch_size=batch_size)
+#valid_gen = generator(float_data_file_path, batch_size=batch_size)
+train_gen = batch_generator(float_data_file_path, batch_size=batch_size)
+valid_gen = batch_generator(float_data_file_path, batch_size=batch_size)
 
 for i, batch in enumerate(train_gen):
     print("IT IS I: %s"%i)
@@ -113,18 +137,48 @@ from keras.layers import Dense, CuDNNGRU, RNN, SimpleRNNCell, Flatten, SimpleRNN
 from keras.optimizers import adam
 from keras.callbacks import ModelCheckpoint, BaseLogger
 
-NB_EPOCHS = 5       # number of times the model sees all the data during training
+NB_EPOCHS = 300       # number of times the model sees all the data during training
 
-N_FORWARD = 8       # train the network to predict N in advance (traditionnally 1)
-RESAMPLE_BY = 5     # averaging period in days (training on daily data is too much)
-RNN_CELLSIZE = 32  # size of the RNN cells
-N_LAYERS = 2        # number of stacked RNN cells (needed for tensor shapes but code must be changed manually)
+N_FORWARD = 8       # train the network to predict N in advance (traditionally 1)
+#RESAMPLE_BY = 5     # averaging period in days (training on daily data is too much)
+RNN_CELLSIZE = 48  # size of the RNN cells
+LSTM_CELLSIZE = 32 # size of the LSTM cells
+N_LAYERS = 6        # number of stacked RNN cells (needed for tensor shapes but code must be changed manually)
 SEQLEN = 32        # unrolled sequence length
 BATCHSIZE = 32      # mini-batch size
 DROPOUT_PKEEP = 0.7 # probability of neurons not being dropped (should be between 0.5 and 1)
 ACTIVATION = tf.nn.tanh # Activation function for GRU cells (tf.nn.relu or tf.nn.tanh)
 
 JOB_DIR  = "checkpoints"
+
+def model_lstm_fn(features, Hin, labels, step, dropout_pkeep):
+    X = features  # shape [BATCHSIZE, SEQLEN, 2], 2 for (agg_features)
+    batchsize = tf.shape(X)[0]
+    seqlen = tf.shape(X)[1]
+    pairlen = tf.shape(X)[2] # should be 2 (acoustic_data, time_to_failure)?
+
+    cells = [tf.contrib.rnn.GRUBlockCell(LSTM_CELLSIZE, activation=ACTIVATION) for _ in range(N_LAYERS)]
+    # dropout useful between cell layers only: no output dropout on last cell-is this good with LSTM? probably
+    cells = [tf.contrib.rnn.lstm_cell.DropoutWrapper(cell, output_keep_prob = dropout_pkeep) for cell in cells]
+    # a stacked LSTM cell still works like an LSTM cell???
+    cell = tf.contrib.rnn.lstm_cell.MultiLSTMCell(cells, state_is_tuple=False)
+    # X[BATCHSIZE, SEQLEN, 2], Hin[BATCHSIZE, LSTM_CELLSIZE*N_LAYERS]
+    # the sequence unrolling happens here
+    Yn, H = tf.contrib.rnn.dynamic_lstm(cell, X, initial_state=Hin, dtype=tf.float32)
+    # Yn[BATCHSIZE, SEQLEN, LSTM_CELLSIZE]
+    Yn = tf.reshape(Yn, [batchsize*seqlen, LSTM_CELLSIZE])
+    Yr = tf.layers.dense(Yn, 32) # Yr [BATCHSIZE*SEQLEN, 2]
+    Yr = tf.reshape(Yr, [batchsize, seqlen, 32]) # Yr [BATCHSIZE, SEQLEN, 2]
+    Yout = Yr[:,-N_FORWARD:,:] # Last N_FORWARD outputs Yout [BATCHSIZE, N_FORWARD, 2]
+    
+    loss = tf.losses.mean_squared_error(Yr, tf.reshape(labels, [1, 1, 32])) # labels[BATCHSIZE, SEQLEN, 2]
+    
+    lr = 0.001 + tf.train.exponential_decay(0.01, step, 1000, 0.5)
+    optimizer = tf.train.AdamOptimizer(learning_rate=lr)
+    train_op = optimizer.minimize(loss)
+    
+    return Yout, H, loss, train_op, Yr
+
 
 def model_rnn_fn(features, Hin, labels, step, dropout_pkeep):
     X = features  # shape [BATCHSIZE, SEQLEN, 2], 2 for (agg_features)
@@ -157,18 +211,34 @@ def model_rnn_fn(features, Hin, labels, step, dropout_pkeep):
 tf.reset_default_graph() # restart model graph from scratch
 
 # placeholder for inputs
-#with tf.device("/device:GPU:0"):
-#(32, 150, 16)-samples.shape -> fed into features? transpose??
-#(32,)-targets.shape -> fed into labels?
-Hin = tf.placeholder(tf.float32, [None, RNN_CELLSIZE * N_LAYERS], name="Hin")
-features = tf.placeholder(tf.float32, [None, None, 16], name="features") # [BATCHSIZE, SEQLEN, 2]
-labels = tf.placeholder(tf.float32, [32], name="labels") # [BATCHSIZE, SEQLEN, 2]??
-step = tf.placeholder(tf.int32, name="step")
-dropout_pkeep = tf.placeholder(tf.float32, name="dropout_pkeep")
+with tf.device("/device:GPU:0"):
+    Hin = tf.placeholder(tf.float32, [None, RNN_CELLSIZE * N_LAYERS], name="Hin")
+    features = tf.placeholder(tf.float32, [None, None, 16], name="features") # [BATCHSIZE, SEQLEN, 2]
+    labels = tf.placeholder(tf.float32, [32], name="labels") # [BATCHSIZE, SEQLEN, 2]??
+    step = tf.placeholder(tf.int32, name="step")
+    dropout_pkeep = tf.placeholder(tf.float32, name="dropout_pkeep")
 
 # instantiate the model
 Yout, H, loss, train_op, Yr = model_rnn_fn(features, Hin, labels, step, dropout_pkeep)
 
+
+SAVEDMODEL = JOB_DIR + "/ckpt" + str(int(time.time()))
+'''
+checkpoint_directory = "/tmp/training_checkpoints"
+checkpoint_prefix = os.path.join(checkpoint_directory, "ckpt")
+
+checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
+status = checkpoint.restore(tf.train.latest_checkpoint(checkpoint_directory))
+train_op = optimizer.minimize( ... )
+status.assert_consumed()  # Optional sanity checks.
+with tf.Session() as session:
+  # Use the Session to restore variables, or initialize them if
+  # tf.train.latest_checkpoint returned None.
+  status.initialize_or_restore(session)
+  for _ in range(num_training_steps):
+    session.run(train_op)
+  checkpoint.save(file_prefix=checkpoint_prefix)
+'''
 # variable initialization
 sess = tf.Session()
 init = tf.global_variables_initializer()
@@ -179,7 +249,6 @@ losses = []
 indices = []
 last_epoch = 99999
 
-TRAIN_EPOCHS = 1000
 '''
 for i, (next_features, next_labels, dates, epoch, fileid) in enumerate(
     
@@ -190,14 +259,15 @@ for i, (next_features, next_labels, dates, epoch, fileid) in enumerate(
                                                                    N_FORWARD,
                                                                    NB_EPOCHS, tminmax=True)):
 '''
+
 for i, (next_features, next_labels, evalranges, epoch) in enumerate(train_gen):
-    if epoch == TRAIN_EPOCHS:
+    if epoch == NB_EPOCHS:
         print(f"Epoch {epoch} reached, saving model...")
         break
     if epoch != last_epoch:
         batchsize = next_features.shape[0]
         H_ = np.zeros([batchsize, RNN_CELLSIZE * N_LAYERS])
-        print("State reset")
+        print("State reset on new epoch: %s"%epoch)
     #train
     feed = {Hin: H_, features: next_features, labels: next_labels, step: i, dropout_pkeep: DROPOUT_PKEEP}
     Yout_, H_, loss_, _, Yr_ = sess.run([Yout, H, loss, train_op, Yr], feed_dict=feed)
@@ -211,11 +281,10 @@ for i, (next_features, next_labels, evalranges, epoch) in enumerate(train_gen):
         indices.append(i)
         
     last_epoch = epoch
-
-SAVEDMODEL = JOB_DIR + "/ckpt" + str(int(time.time()))
-tf.contrib.saved_model.simple_save(sess, SAVEDMODEL,
-                           inputs={"features":features, "Hin":Hin, "dropout_pkeep":dropout_pkeep},
-                           outputs={"Yout":Yout, "H":H})
+saver.save(sess, SAVEDMODEL)
+#tf.saved_model.simple_save(sess, SAVEDMODEL,
+#                           inputs={"features":features, "Hin":Hin, "dropout_pkeep":dropout_pkeep},
+#                           outputs={"Yout":Yout, "H":H})
 
 plt.ylim(ymax=np.amax(losses[1:])) # ignore first value for scaling
 plt.plot(indices, losses)
@@ -260,7 +329,7 @@ CHUNKSIZE = 150*100*2
 #OFFSET = 30*YEAR+1*QYEAR
 OFFSET = 30*CHUNKSIZE#coef of OFFSET upper bounded by 4196/2 - BATCH_LIMIT
 
-PRIMELEN=5*YEAR#?something extra?
+PRIMELEN=5*CHUNKSIZE#?something extra? CHUNKSIZE was YEAR
 
 RUNLEN=BATCH_LIMIT*CHUNKSIZE
 RMSELEN=3*CHUNKSIZE # accuracy of predictions next 3 chunks???
@@ -274,11 +343,13 @@ for evaldata in valid_gen:
         prime_data, results, PRIMELEN, RUNLEN, OFFSET, RMSELEN)
 
 def picture_these(evaldata, evalranges, prime_data, results, primelen, runlen, offset, rmselen):
+    return
 
-
+from matplotlib import transforms as plttrans
+import math
 def picture_this(evaldata, evalranges, prime_data, results, primelen, runlen, offset, rmselen):
     disp_data = evaldata[offset:offset+primelen+runlen]
-    disp_dates = evaldates[offset:offset+primelen+runlen]
+    disp_dates = evalranges[offset:offset+primelen+runlen]
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
     displayresults = np.ma.array(np.concatenate((np.zeros([primelen,2]), results)))
     displayresults = np.ma.masked_where(displayresults == 0, displayresults)
@@ -295,3 +366,17 @@ def picture_this(evaldata, evalranges, prime_data, results, primelen, runlen, of
 
     rmse = math.sqrt(np.mean((evaldata[offset+primelen:offset+primelen+rmselen] - results[:rmselen])**2))
     print("RMSE on {} predictions (shaded area): {}".format(rmselen, rmse))
+
+'''
+regressor = tf.estimator.Estimator(model_fn=model_lstm_fn(features, Hin, labels, step, dropout_pkeep))
+
+X_valid, y_valid, sample_ranges, epoch = valid_gen
+X_train, y_train, sample_ranges, epoch = train_gen
+PRINT_STEPS = 20
+validation_monitor = tf.contrib.learn.monitors.ValidationMonitor(X_valid, y_valid,
+                                                      every_n_steps=PRINT_STEPS,
+                                                      early_stopping_rounds=1000)
+
+regressor.compile(X_train, y_train, monitors=[validation_monitor])
+'''
+

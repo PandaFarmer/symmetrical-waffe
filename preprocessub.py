@@ -5,13 +5,14 @@ import time
 chunksize = 150000
 
 start_write = time.time()
-
+start_batch_write = 0
+end_batch_write = 0
 for i, chunk in enumerate(pd.read_csv("input/train.csv", chunksize=chunksize)):
 	start_batch_write = time.time()
 	print("writing to file rows batchnum: %d"%(i), end="\r")
 	chunk.ix[i*chunksize : i*chunksize + chunksize].to_csv(path_or_buf="input/train/train_batch_num%s.csv"%i)
 	end_batch_write = time.time()
-	print("Batch write completed for batch_num: %d in %.3f"%(i, end_batch_write-start_batch_write), end="\r")
+	print("Batch write completed for batch_num: %d in %.3fs"%(i, end_batch_write-start_batch_write), end="\r")
 
 end_write = time.time()
 
