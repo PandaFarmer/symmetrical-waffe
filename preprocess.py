@@ -3,10 +3,15 @@ import pandas as pd
 import time
 
 start_read = time.time()
-df = pd.read_csv("input/train.csv", low_memor=False)
+df = pd.read_csv("input/train.csv", chunksize=100)
+for i, chunk in enumerate(df):
+	print(chunk.head())
+	break
+#df = pd.read_csv("input/train.csv", low_memor=False)
+
 
 #df_ss = pd.read_csv("KaggleLANL/sample_submission.csv")
-
+'''
 end_read = time.time()
 
 print("Read completed in: {}s".format(end_read - start_read))
@@ -35,3 +40,4 @@ print("Write completed in: {}s".format(end_write - start_write))
 
 
 #print(df_ss)
+'''

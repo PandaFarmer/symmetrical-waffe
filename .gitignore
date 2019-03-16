@@ -1,1 +1,8 @@
-input
+input/
+bq.py
+quakedatagen.ipynb
+quakes.ipynb
+zero_out_gpu.cu.cc
+zero_out.cc
+zero_out.h
+kernel.cc

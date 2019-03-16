@@ -1,3 +1,7 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -5,6 +9,41 @@ import time
 
 import sys
 import os
+
+from absl import flags
+
+FLAGS = flags.FLAGS
+'''
+flags.DEFINE_integer(
+    'batch_limit', 
+    default=1, 
+    help='Upper bound of range of data to look through, scaled by 300,000.'
+)
+
+flags.DEFINE_integer(
+    'rnn_cellsize', 
+    default=32, 
+    help='RNN cellsize, whatever that means? Number of nodes per layer?'
+)
+
+flags.DEFINE_integer(
+    'nb_epochs', 
+    default=300, 
+    help='Number of epochs to run training over, keep in mind epoch length'
+    'is directly related to batch_limit in this implementation,'
+)
+flags.DEFINE_integer('n_layers', 
+    default=6, 
+    help='Number of layers in rnn model.'
+)
+'''
+'''
+for cp later
+flags.DEFINE_string('', 
+    default=, 
+    help=''
+)
+'''
 
 def extract_features(z):
      return np.c_[z.mean(axis=1),
@@ -57,9 +96,9 @@ def batch_generator(file_name, batch_size=16, n_steps=150, step_length = 1000):
     chunksize = n_steps*step_length
     while True:
         for i in range(BATCH_LIMIT*2):
-            float_data1 = pd.read_csv(f"{TRAIN_FILEPATH}{i}.csv",
+            float_data1 = pd.read_csv("%s%d.csv"%(TRAIN_FILEPATH, i),
                 dtype={"acoustic_data": np.float32, "time_to_failure": np.float32})
-            float_data2 = pd.read_csv(f"{TRAIN_FILEPATH}{i+1}.csv",
+            float_data2 = pd.read_csv("%s%d.csv"%(TRAIN_FILEPATH, i+1),
                 dtype={"acoustic_data": np.float32, "time_to_failure": np.float32})
             data = np.vstack((float_data1.values, float_data2.values))
             rows = np.random.randint(chunksize, size=batch_size)
@@ -81,7 +120,7 @@ def generator(file_path, batch_size=16, n_steps=150, step_length = 1000):
     epoch = 0
     while True:
         chunksize = 2*n_steps*step_length
-        float_data = pd.read_csv(f"input/{file_path}", chunksize=chunksize,
+        float_data = pd.read_csv("input/%s"%file_path, chunksize=chunksize,
             dtype={"acoustic_data": np.float32, "time_to_failure": np.float32})
         for i, data in enumerate(float_data):
             if i == BATCH_LIMIT:
@@ -262,7 +301,7 @@ for i, (next_features, next_labels, dates, epoch, fileid) in enumerate(
 
 for i, (next_features, next_labels, evalranges, epoch) in enumerate(train_gen):
     if epoch == NB_EPOCHS:
-        print(f"Epoch {epoch} reached, saving model...")
+        print("Epoch %d reached, saving model..."%epoch)
         break
     if epoch != last_epoch:
         batchsize = next_features.shape[0]
